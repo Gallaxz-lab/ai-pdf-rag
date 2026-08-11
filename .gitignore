@@ -1,2 +1,6 @@
 resume.pdf
+venv/
 .env
+.env.local
+__pycache__/
+*.pyc

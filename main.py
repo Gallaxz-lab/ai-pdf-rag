@@ -1,139 +1,99 @@
 import os
-import io
 import sys
 from dotenv import load_dotenv
-from pypdf import PdfReader
-import chromadb
-from chromadb.api.types import EmbeddingFunction, Documents, Embeddings
-import litellm
-
+from pdf_reader import extract_text_from_pdf, split_text_into_chunks
+from vector_store import VectorStoreManager
+from llm import LLMManager
+from prompts import RAG_SYSTEM_PROMPT, RAG_USER_TEMPLATE
 
 load_dotenv()
 
-if not os.getenv("GEMINI_API_KEY"):
-    print("Please set the GEMINI_API_KEY environment variable in your .env file.")
-    sys.exit(1)
-
-EMBEDDING_MODEL = "gemini-embedding-2"
-
-def extract_text_from_pdf(pdf_path: str) -> str:
-    """Reads a local PDF file path and outputs a unified clean text string."""
-    try:
-        reader = PdfReader(pdf_path)
-        extracted_text = []
-        for page in reader.pages:
-            text = page.extract_text()
-            if text:
-                extracted_text.append(text)
-        return "\n".join(extracted_text).strip()
-    except Exception as e:
-        print(f"❌ Failed reading PDF file: {e}")
+def bootstrap_knowledge_base() -> VectorStoreManager:
+    """Initializes the database and parses the local PDF file content."""
+    TARGET_PDF = "resume.pdf"
+    
+    if not os.path.exists(TARGET_PDF):
+        print(f"❌ Error: Missing mandatory document file source target '{TARGET_PDF}'.")
+        print("Please place your target PDF file inside this repository folder root before running.")
         sys.exit(1)
         
-def split_text_into_chunks(text: str, chunk_size: int = 400, chunk_overlap: int = 50) -> list[str]:
-    """Splits the text into chunks of specified size with optional overlap."""
-    chunks = []
-    start_index = 0
-    text_length = len(text)
+    if not os.getenv("GEMINI_API_KEY"):
+        print("❌ Critical Error: GEMINI_API_KEY environment token not found in .env.")
+        sys.exit(1)
 
-    while start_index < text_length:
-        end_index = start_index + chunk_size
-        chunk = text[start_index:end_index]
-        chunks.append(chunk.strip())
-        
-        start_index += (chunk_size - chunk_overlap)
-        
-    return [c for c in chunks if c]
-
-class LiteLLMEmbeddingAdapter(EmbeddingFunction):
-    def __call__(self, input: Documents) -> Embeddings:
-        response = litellm.embedding(
-            model=EMBEDDING_MODEL,
-            input=input,
-            api_key=os.getenv("GEMINI_API_KEY"),
-            custom_llm_provider="gemini"
-        )
-        return [item['embedding'] for item in response['data']]
+    print("⚙️  Parsing and indexing local document structure data...")
     
+    # 1. Initialize DB storage structure wrapper
+    db_manager = VectorStoreManager()
+    
+    # 2. Process physical file chunks text extraction
+    raw_text = extract_text_from_pdf(TARGET_PDF)
+    text_chunks = split_text_into_chunks(raw_text, chunk_size=500, chunk_overlap=80)
+    
+    # 3. Save calculated vectors into indexing layer
+    db_manager.ingest_document_chunks(text_chunks)
+    print(f"✅ Ingestion complete. {len(text_chunks)} document chunks indexed successfully.\n")
+    
+    return db_manager
+
 def main():
-    PDF_FILE_TARGET = "resume.pdf" 
-    
-    if not os.path.exists(PDF_FILE_TARGET):
-        print(f"❌ Error: Please drop a sample PDF file named '{PDF_FILE_TARGET}' into your project folder.")
-        print("You can copy any raw text resume, print it as a PDF, and save it as 'resume.pdf'.")
-        return
+    # Initialize your component architectural layers
+    db = bootstrap_knowledge_base()
+    ai_engine = LLMManager()
 
-    print("="*60)
-    print("🚀 PIPELINE PHASE 1: PARSING AND PROCESSING")
-    print("="*60)
+    print("==========================================================")
+    print("📄  PDF CONTEXTUAL AI ASSISTANT CLIENT LOOP CHATBOT       ")
+    print("==========================================================")
+    print(" -> Core Status: Operational")
+    print(" -> Semantic Query Context Guardrails: Active")
+    print(" -> Commands: Type 'exit' or 'quit' to close connection.")
+    print("==========================================================\n")
 
-    raw_document_text = extract_text_from_pdf(PDF_FILE_TARGET)
-    print(f"✅ Text extracted successfully. Total character length: {len(raw_document_text)}")
-
-    CHUNK_SIZE = 500
-    CHUNK_OVERLAP = 80
-    text_chunks = split_text_into_chunks(raw_document_text, chunk_size=CHUNK_SIZE, chunk_overlap=CHUNK_OVERLAP)
-    
-    print(f"✅ Sliced text into {len(text_chunks)} distinct overlapping chunks.")
-    print(f"👉 Parameters Active: Size={CHUNK_SIZE} chars | Overlap={CHUNK_OVERLAP} chars\n")
-
-    # Display the chunks visually to observe formatting and boundary structures
-    print("--- SAMPLE CHUNK ITERATION VISUALIZER ---")
-    for idx, chunk in enumerate(text_chunks[:3]): # Displaying the first 3 slices
-        print(f"📦 [CHUNK {idx + 1} / CHARACTER COUNT: {len(chunk)}]:")
-        print(f"\"{chunk}\"")
-        print("-" * 40)
-
-    print("\n" + "="*60)
-    print("💾 PIPELINE PHASE 2: VECTOR STORE EMBEDDING & STORAGE")
-    print("="*60)
-
-   
-    chroma_client = chromadb.EphemeralClient()
-
-    embedding_function = LiteLLMEmbeddingAdapter()
-    collection = chroma_client.create_collection(
-        name="resume_knowledge_store", 
-        embedding_function=embedding_function
-    )
-
-    string_ids = [f"id_chunk_{i}" for i in range(len(text_chunks))]
-    
-    print("🧠 Generating mathematical thought vectors via LiteLLM...")
-    collection.add(
-        documents=text_chunks,
-        ids=string_ids
-    )
-    print("✅ Vectors permanently mapped and indexed into ChromaDB collections storage layer.\n")
-
-    print("="*60)
-    print("🔍 PIPELINE PHASE 3: DIAGNOSTIC RETRIEVAL ANALYSIS")
-    print("="*60)
-
-    diagnostic_questions = [
-        "What programming experience does this document mention?",
-        "What programming languages are mentioned?",
-        "What technical skills does the person have?"
+    # Initialize your conversation tracker list.
+    # The system prompt enforces strict rules at index 0.
+    chat_history = [
+        {"role": "system", "content": RAG_SYSTEM_PROMPT}
     ]
 
-    for rank, question in enumerate(diagnostic_questions, 1):
-        print(f"\n❓ TEST QUESTION {rank}: \"{question}\"")
-        print("⚡ Executing semantic neighborhood distance match...")
-        
-        query_results = collection.query(
-            query_texts=[question],
-            n_results=2
-        )
+    while True:
+        try:
+            print("👤 You:")
+            user_question = input(">> ").strip()
+            
+            if not user_question:
+                continue
+            if user_question.lower() in ["exit", "quit"]:
+                print("\n👋 Severing backend session. Goodbye!")
+                break
 
-        retrieved_documents = query_results['documents'][0]
-        
-        print("\n🎯 TOP SEMANTIC RETRIEVED CHUNKS FOR THIS CONTEXT:")
-        print("-" * 50)
-        for rank_idx, doc_chunk in enumerate(retrieved_documents, 1):
-            print(f"🔹 Match Rank {rank_idx}:")
-            print(f"\"{doc_chunk}\"")
-            print("." * 40)
-        print("-" * 50)
+            print("\n🔍 Fetching knowledge base facts...")
+            # Step A: Perform vector lookup using Top-K (fetching top 3 relevant chunks)
+            matched_context = db.search_relevant_context(user_question, top_k=3)
+
+            # Step B: Build your context-injected user prompt string composition
+            augmented_user_prompt = RAG_USER_TEMPLATE.format(
+                context_text=matched_context,
+                user_question=user_question
+            )
+
+            # Step C: Append the newly engineered payload block to history list
+            chat_history.append({"role": "user", "content": augmented_user_prompt})
+
+            print("🤖 AI Thinking...")
+            # Step D: Route the entire conversational context payload block to the model
+            ai_answer = ai_engine.generate_chat_response(chat_history)
+
+            print("\n🤖 Assistant:")
+            print("-" * 60)
+            print(ai_answer)
+            print("-" * 60 + "\n")
+
+            # Step E: Append the clean assistant string answer to preserve conversation state
+            chat_history.append({"role": "assistant", "content": ai_answer})
+
+        except KeyboardInterrupt:
+            print("\n\n👋 Forced connection drop. Goodbye!")
+            break
 
 if __name__ == "__main__":
     main()

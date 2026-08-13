@@ -1,9 +1,12 @@
+"""
+ChromaDB Management Layer with Metadata and Source Attribution Extraction.
+"""
 import chromadb
 from embeddings import LiteLLMEmbeddingAdapter
 
-class VectorStoreManager:
-    """Manages local in-memory ChromaDB operations and vector indexing."""
-    def __init__(self, collection_name: str = "pdf_rag_knowledge_base"):
+class DynamicVectorStoreManager:
+    """Manages ephemeral collection operations and formats sources for RAG contexts."""
+    def __init__(self, collection_name: str):
         self.client = chromadb.EphemeralClient()
         self.embedding_function = LiteLLMEmbeddingAdapter()
         self.collection = self.client.create_collection(
@@ -11,23 +14,30 @@ class VectorStoreManager:
             embedding_function=self.embedding_function
         )
 
-    def ingest_document_chunks(self, chunks: list[str]) -> None:
-        """Indexes raw text segments into the collection database layer."""
-        if not chunks:
-            raise ValueError("Cannot ingest an empty list of text chunks.")
+    def ingest_structured_chunks(self, chunks_data: list[dict]) -> None:
+        """Loads calculated lists into database arrays alongside metadata tags."""
+        if not chunks_data:
+            return
+            
+        documents = [c["text"] for c in chunks_data]
+        ids = [c["chunk_id"] for c in chunks_data]
+        metadatas = [c["metadata"] for c in chunks_data]
         
-        string_ids = [f"id_chunk_{i}" for i in range(len(chunks))]
-        self.collection.add(documents=chunks, ids=string_ids)
+        self.collection.add(documents=documents, ids=ids, metadatas=metadatas)
 
-    def search_relevant_context(self, question: str, top_k: int = 3) -> str:
-        """Performs a geometric distance lookup and merges the top-k results into a single context string."""
-        query_results = self.collection.query(
-            query_texts=[question],
-            n_results=top_k
-        )
+    def query_context_with_attribution(self, question: str, top_k: int = 2) -> tuple[str, list[dict]]:
+        """Queries database and extracts matching text blocks alongside source tracking details."""
+        query_results = self.collection.query(query_texts=[question], n_results=top_k)
         
-        # Extract matching document text strings list
         retrieved_docs = query_results.get('documents', [[]])[0]
+        retrieved_meta = query_results.get('metadatas', [[]])[0]
         
-        # Merge individual context chunks with clean spacing breaks
-        return "\n\n---\n\n".join(retrieved_docs)
+        context_string = "\n\n---\n\n".join(retrieved_docs)
+        
+        # Compile a clean attribution array dictionary list for user printout routines
+        attributions = [
+            {"page": meta["page"], "chunk": meta["chunk_index"]} 
+            for meta in retrieved_meta
+        ]
+        
+        return context_string, attributions
